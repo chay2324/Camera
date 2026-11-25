@@ -144,7 +144,8 @@ class MainActivity : Activity(), CameraEngine.Callback {
 
     private fun selectDefaultLens() {
         val list = lenses.filter { it.facingBack == facingBack }
-        lens = if (facingBack) list.firstOrNull { it.physicalId != null && it.label == "1x" && it.hasRaw }
+        lens = if (facingBack) list.firstOrNull { it.physicalId == null && it.hasRaw && (it.label == "Auto" || it.label == "1x") }
+            ?: list.firstOrNull { it.physicalId != null && it.label == "1x" && it.hasRaw }
             ?: list.firstOrNull { it.hasRaw } ?: list.firstOrNull()
         else list.firstOrNull()
     }
@@ -218,6 +219,7 @@ class MainActivity : Activity(), CameraEngine.Callback {
             } else {
                 s.format = Format.values()[(s.format.ordinal + 1) % Format.values().size]
                 it.text = s.format.label
+                engine.rebuild()
             }
         }
         lookChip = chip("Natural") {
@@ -250,6 +252,8 @@ class MainActivity : Activity(), CameraEngine.Callback {
             it.text = if (speaker.enabled) "Replies: on" else "Replies: off"
         }
         talkRow.addView(talkChip, LinearLayout.LayoutParams(-2, -2).apply { setMargins(dp(6), dp(2), dp(6), dp(2)) })
+        val infoChip = chip("Info") { showInfo() }
+        talkRow.addView(infoChip, LinearLayout.LayoutParams(-2, -2).apply { setMargins(dp(6), dp(2), dp(6), dp(2)) })
         talkRow.addView(repliesChip, LinearLayout.LayoutParams(-2, -2).apply { setMargins(dp(6), dp(2), dp(6), dp(2)) })
         bottom.addView(talkRow)
 
@@ -441,6 +445,15 @@ class MainActivity : Activity(), CameraEngine.Callback {
 
     // ------------------------------------------------------------------ voice
 
+    private fun showInfo() {
+        val text = try { Lenses.report(this) } catch (e: Exception) { "Could not read camera info: ${e.message}" }
+        android.app.AlertDialog.Builder(this)
+            .setTitle("What this phone allows")
+            .setMessage(text)
+            .setPositiveButton("OK", null)
+            .show()
+    }
+
     private fun say(text: String) {
         toast(text)
         if (!engine.isRecording()) speaker.say(text)   // don't let replies end up in a video's audio
@@ -560,7 +573,7 @@ class MainActivity : Activity(), CameraEngine.Callback {
                 else { s.flash = cmd.mode; syncChips(); engine.updateRepeating(); cmd.mode.label }
             }
             is Cmd.Fmt -> {
-                s.format = cmd.format; syncChips()
+                s.format = cmd.format; syncChips(); engine.rebuild()
                 if (cmd.format != Format.JPEG && lens?.hasRaw == false) "${cmd.format.label} set, but this lens has no RAW. Try the 1x lens."
                 else "Format ${cmd.format.label}"
             }

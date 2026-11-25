@@ -19,9 +19,12 @@ If the build fails, open the failed step in Actions and send me the error text; 
   (0.5x, 1x, 2x, 5x, ...) when your phone exposes them to apps.
 - **Controls**: tap to focus, pinch zoom, flash/torch, timer, grid, front/back, and a Pro panel
   with manual ISO, shutter, focus, exposure compensation and white-balance presets.
-- **Natural look** (default): sharpening, denoise-boost, extra contrast curve, effects and scene
-  modes are turned off, so JPEG/video come out close to the plain sensor image. Switch to "Std" for
-  the phone's normal processing.
+- **Natural look** (default): plain sRGB tone curve, no effects or scene modes, so colour isn't
+  stylised. Sharpening and noise reduction stay at the phone's own quality setting so shots stay
+  clear. Switch to "Std" for the phone's normal tone curve. Optical stabilization is on whenever the
+  lens has it, and video uses electronic stabilization (slight crop).
+- **Info button**: shows which cameras/lenses on your phone give RAW to apps. Send me that text if
+  RAW doesn't work.
 
 ## Voice assistant (offline, push-to-talk)
 Tap **Talk**, then speak. Understood by simple built-in rules; nothing is sent anywhere.

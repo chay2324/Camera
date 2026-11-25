@@ -21,7 +21,7 @@ enum class WbPreset(val label: String, val awb: Int) {
 /** Everything the user can change. Read from the camera thread, written from the UI thread. */
 class CaptureSettings {
     @Volatile var format = Format.RAW_JPEG
-    /** true = no beautification: no sharpening, no denoise, no extra contrast curve, no effects. */
+    /** true = plain sRGB tone curve, no effects or scene modes (no stylised colour). */
     @Volatile var natural = true
     @Volatile var manualExposure = false
     @Volatile var iso = 100
@@ -32,7 +32,7 @@ class CaptureSettings {
     @Volatile var flash = FlashMode.OFF
     @Volatile var wb = WbPreset.AUTO
     @Volatile var zoom = 1f
-    @Volatile var stabilize = false                 // video stabilization crops/warps; off by default
+    @Volatile var stabilize = true                  // electronic video stabilization (slight crop)
     @Volatile var rawVideoFps = 10
 }
 
@@ -108,30 +108,32 @@ fun CaptureRequest.Builder.applyUserSettings(s: CaptureSettings, lens: Lens, sti
         }
     }
 
-    // ---- "don't touch my image" processing ----
-    if (s.natural) {
+    // ---- stabilization: optical always (when the lens has it), electronic for video ----
+    val ois = c.get(CameraCharacteristics.LENS_INFO_AVAILABLE_OPTICAL_STABILIZATION)
+    if (ois.has(CameraMetadata.LENS_OPTICAL_STABILIZATION_MODE_ON))
+        set(CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE, CameraMetadata.LENS_OPTICAL_STABILIZATION_MODE_ON)
+    val eis = c.get(CameraCharacteristics.CONTROL_AVAILABLE_VIDEO_STABILIZATION_MODES)
+    set(CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE,
+        if (s.stabilize && video && eis.has(CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_ON))
+            CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_ON
+        else CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_OFF)
+
+    // ---- sharpness / noise: always the phone's own quality processing (this is what keeps shots clear) ----
+    if (still && !video) {
         val nr = c.get(CameraCharacteristics.NOISE_REDUCTION_AVAILABLE_NOISE_REDUCTION_MODES)
-        when {
-            nr.has(CameraMetadata.NOISE_REDUCTION_MODE_MINIMAL) -> set(CaptureRequest.NOISE_REDUCTION_MODE, CameraMetadata.NOISE_REDUCTION_MODE_MINIMAL)
-            nr.has(CameraMetadata.NOISE_REDUCTION_MODE_OFF) -> set(CaptureRequest.NOISE_REDUCTION_MODE, CameraMetadata.NOISE_REDUCTION_MODE_OFF)
-        }
+        if (nr.has(CameraMetadata.NOISE_REDUCTION_MODE_HIGH_QUALITY))
+            set(CaptureRequest.NOISE_REDUCTION_MODE, CameraMetadata.NOISE_REDUCTION_MODE_HIGH_QUALITY)
         val edge = c.get(CameraCharacteristics.EDGE_AVAILABLE_EDGE_MODES)
-        if (edge.has(CameraMetadata.EDGE_MODE_OFF)) set(CaptureRequest.EDGE_MODE, CameraMetadata.EDGE_MODE_OFF)
-        val ab = c.get(CameraCharacteristics.COLOR_CORRECTION_AVAILABLE_ABERRATION_MODES)
-        if (ab.has(CameraMetadata.COLOR_CORRECTION_ABERRATION_MODE_OFF)) set(CaptureRequest.COLOR_CORRECTION_ABERRATION_MODE, CameraMetadata.COLOR_CORRECTION_ABERRATION_MODE_OFF)
+        if (edge.has(CameraMetadata.EDGE_MODE_HIGH_QUALITY))
+            set(CaptureRequest.EDGE_MODE, CameraMetadata.EDGE_MODE_HIGH_QUALITY)
+    }
+
+    // ---- "Natural": plain sRGB tone curve, no effects/scene modes. Color is not stylised. ----
+    if (s.natural) {
         val tm = c.get(CameraCharacteristics.TONEMAP_AVAILABLE_TONE_MAP_MODES)
         if (tm.has(CameraMetadata.TONEMAP_MODE_PRESET_CURVE)) {
             set(CaptureRequest.TONEMAP_MODE, CameraMetadata.TONEMAP_MODE_PRESET_CURVE)
             set(CaptureRequest.TONEMAP_PRESET_CURVE, CameraMetadata.TONEMAP_PRESET_CURVE_SRGB)
-        }
-        set(CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE,
-            if (s.stabilize) CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_ON else CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_OFF)
-    } else {
-        set(CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE,
-            if (s.stabilize) CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_ON else CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_OFF)
-        if (still) {
-            set(CaptureRequest.NOISE_REDUCTION_MODE, CameraMetadata.NOISE_REDUCTION_MODE_HIGH_QUALITY)
-            set(CaptureRequest.EDGE_MODE, CameraMetadata.EDGE_MODE_HIGH_QUALITY)
         }
     }
 }

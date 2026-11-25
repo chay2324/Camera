@@ -14,6 +14,7 @@ import android.provider.MediaStore
 /** Saves everything straight into the system gallery (MediaStore). Nothing else is touched. */
 class MediaSaver(ctx: Context) {
     private val cr: ContentResolver = ctx.applicationContext.contentResolver
+    @Volatile var lastError = ""
 
     private fun insertImage(name: String, mime: String, dir: String): Uri? {
         val v = ContentValues().apply {
@@ -39,7 +40,7 @@ class MediaSaver(ctx: Context) {
         return try {
             cr.openOutputStream(uri)?.use { it.write(bytes) }
             publish(uri); uri
-        } catch (e: Exception) { discard(uri); null }
+        } catch (e: Exception) { lastError = e.message ?: e.javaClass.simpleName; discard(uri); null }
     }
 
     /** Writes a DNG. [subDir] groups RAW-video frames, e.g. "/clip_0001". */
@@ -54,7 +55,7 @@ class MediaSaver(ctx: Context) {
                 cr.openOutputStream(uri)?.use { dng.writeImage(it, image) }
             }
             publish(uri); uri
-        } catch (e: Exception) { discard(uri); null }
+        } catch (e: Exception) { lastError = e.message ?: e.javaClass.simpleName; discard(uri); null }
     }
 
     class PendingVideo(val uri: Uri, val pfd: ParcelFileDescriptor)

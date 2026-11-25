@@ -92,6 +92,7 @@ class CameraEngine(
     private var recorder: MediaRecorder? = null
     private var pendingVideo: MediaSaver.PendingVideo? = null
     private var rawDisabled = false
+    private var jpegDisabled = false
     private var epoch = 0
     private var sessionGen = 0
 
@@ -113,7 +114,7 @@ class CameraEngine(
 
     fun open(l: Lens, m: Mode, tex: SurfaceTexture) = handler.post {
         closeInternal()
-        lens = l; mode = m; texture = tex; rawDisabled = false
+        lens = l; mode = m; texture = tex; rawDisabled = false; jpegDisabled = false
         settings.zoom = 1f
         openInternal()
     }
@@ -150,6 +151,9 @@ class CameraEngine(
     }
 
     fun updateRepeating() = handler.post { applyRepeating() }
+
+    /** Rebuild the streams (needed when the photo format changes). */
+    fun rebuild() = handler.post { if (device != null && !recording) createSession() }
 
     fun takePhoto() = handler.post { takePhotoInternal() }
 
@@ -279,8 +283,11 @@ class CameraEngine(
         }
         add(surface)
 
-        val wantRaw = (mode == Mode.RAW_VIDEO || mode == Mode.PHOTO) && l.hasRaw && !rawDisabled
-        if (mode == Mode.PHOTO) {
+        val rawPossible = l.hasRaw && !rawDisabled
+        val fmt = settings.format
+        val wantRaw = rawPossible && (mode == Mode.RAW_VIDEO || (mode == Mode.PHOTO && fmt != Format.JPEG))
+        val wantJpeg = mode == Mode.PHOTO && !jpegDisabled && (fmt != Format.RAW || !rawPossible)
+        if (wantJpeg) {
             val js = map.getOutputSizes(ImageFormat.JPEG)?.maxByOrNull { it.width * it.height }
             if (js != null) {
                 jpegReader = ImageReader.newInstance(js.width, js.height, ImageFormat.JPEG, 2).also {
@@ -313,9 +320,13 @@ class CameraEngine(
                 }
                 override fun onConfigureFailed(cs: CameraCaptureSession) {
                     if (gen != sessionGen) return
-                    if (mode == Mode.PHOTO && rawReader != null && !rawDisabled) {
-                        rawDisabled = true
-                        cb.onMessage("RAW + JPEG not possible on this lens together; JPEG only")
+                    if (mode == Mode.PHOTO && rawReader != null && jpegReader != null) {
+                        jpegDisabled = true
+                        cb.onMessage("This lens can't do RAW and JPEG together, so it will save RAW only")
+                        createSession()
+                    } else if (mode == Mode.PHOTO && rawReader != null) {
+                        rawDisabled = true; jpegDisabled = false
+                        cb.onMessage("RAW isn't allowed on this lens for apps, so it will save JPEG")
                         createSession()
                     } else cb.onMessage("Could not start this lens")
                 }
@@ -402,9 +413,11 @@ class CameraEngine(
         val fmt = settings.format
         val raw = rawReader
         val jpg = jpegReader
-        val wantRaw = fmt != Format.JPEG && raw != null
-        val wantJpeg = (fmt != Format.RAW || raw == null) && jpg != null
-        if (fmt != Format.JPEG && raw == null) cb.onMessage("No RAW on this lens, saving JPEG")
+        val wantRaw = raw != null
+        val wantJpeg = jpg != null
+        if (fmt != Format.JPEG && raw == null)
+            cb.onMessage(if (!l.hasRaw) "This lens doesn't give RAW to apps. Tap Info to see which do. Saving JPEG."
+                         else "RAW isn't working on this lens. Saving JPEG.")
         if (!wantRaw && !wantJpeg) return
         val name = "IMG_" + SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.US).format(Date())
         val orient = exifOrientation()
@@ -501,10 +514,11 @@ class CameraEngine(
                 }
                 if (tag.raw && rawImg != null) {
                     val phys: CaptureResult = l.physicalId?.let { res.physicalCameraResults[it] } ?: res
-                    val uri = saver.saveDng(tag.name, rawImg, l.chars, phys, tag.orient, tag.subDir)
+                    var uri = saver.saveDng(tag.name, rawImg, l.chars, phys, tag.orient, tag.subDir)
+                    if (uri == null && phys !== res) uri = saver.saveDng(tag.name, rawImg, l.chars, res, tag.orient, tag.subDir)
                     rawImg.close()
                     if (uri != null) { lastUri = uri; if (tag.subDir.isEmpty()) cb.onSaved(uri, "image/x-adobe-dng") }
-                    else cb.onMessage("Could not write RAW file")
+                    else cb.onMessage("Could not write RAW: ${saver.lastError}")
                 }
             } catch (e: Exception) {
                 cb.onMessage("Save failed: ${e.message}")

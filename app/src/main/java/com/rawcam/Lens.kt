@@ -1,6 +1,8 @@
 package com.rawcam
 
 import android.content.Context
+import android.graphics.ImageFormat
+import android.os.Build
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraManager
 import android.hardware.camera2.CameraMetadata
@@ -57,7 +59,53 @@ object Lenses {
                 out.add(Lens(id, null, if (back) "1x" else "Front", back, equiv(c), hasRaw(c), c, c))
             }
         }
-        return out
+        return relabelStandalone(out)
+    }
+
+    /** Phones that list each lens as its own camera id: give them real 0.5x / 1x / 2x labels. */
+    private fun relabelStandalone(list: List<Lens>): List<Lens> {
+        val solo = list.filter { it.facingBack && it.physicalId == null && it.label == "1x" }
+        if (solo.size < 2) return list
+        val ref = solo.minByOrNull { abs(it.equivFocalMm - 26f) }!!.equivFocalMm
+        return list.map { if (it in solo) it.copy(label = fmt(it.equivFocalMm / ref)) else it }
+    }
+
+    /** Plain-text report of what this phone lets apps use. Shown by the Info button. */
+    fun report(ctx: Context): String {
+        val mgr = ctx.getSystemService(Context.CAMERA_SERVICE) as CameraManager
+        val sb = StringBuilder()
+        sb.append("${Build.MANUFACTURER} ${Build.MODEL}, Android ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})\n")
+        for (id in mgr.cameraIdList) {
+            val c = try { mgr.getCameraCharacteristics(id) } catch (e: Exception) { continue }
+            sb.append("\n").append(describe("Camera $id", c))
+            for (pid in c.physicalCameraIds) {
+                val pc = try { mgr.getCameraCharacteristics(pid) } catch (e: Exception) { null }
+                if (pc != null) sb.append(describe("   lens $pid (inside $id)", pc))
+            }
+        }
+        return sb.toString()
+    }
+
+    private fun describe(title: String, c: CameraCharacteristics): String {
+        val facing = when (c.get(CameraCharacteristics.LENS_FACING)) {
+            CameraCharacteristics.LENS_FACING_BACK -> "back"
+            CameraCharacteristics.LENS_FACING_FRONT -> "front"
+            else -> "external"
+        }
+        val level = when (c.get(CameraCharacteristics.INFO_SUPPORTED_HARDWARE_LEVEL)) {
+            CameraMetadata.INFO_SUPPORTED_HARDWARE_LEVEL_LEGACY -> "legacy"
+            CameraMetadata.INFO_SUPPORTED_HARDWARE_LEVEL_LIMITED -> "limited"
+            CameraMetadata.INFO_SUPPORTED_HARDWARE_LEVEL_FULL -> "full"
+            CameraMetadata.INFO_SUPPORTED_HARDWARE_LEVEL_3 -> "level3"
+            else -> "?"
+        }
+        val caps = c.get(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES) ?: intArrayOf()
+        val map = c.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
+        fun maxSize(fmt: Int) = map?.getOutputSizes(fmt)?.maxByOrNull { it.width * it.height }?.let { "${it.width}x${it.height}" } ?: "none"
+        return "$title: $facing, ${"%.0f".format(equiv(c))}mm eq, $level\n" +
+            "   RAW: ${if (hasRaw(c)) "YES (${maxSize(ImageFormat.RAW_SENSOR)})" else "no"}, " +
+            "manual: ${if (caps.contains(CameraMetadata.REQUEST_AVAILABLE_CAPABILITIES_MANUAL_SENSOR)) "yes" else "no"}, " +
+            "JPEG max ${maxSize(ImageFormat.JPEG)}\n"
     }
 
     private fun hasRaw(c: CameraCharacteristics): Boolean =
