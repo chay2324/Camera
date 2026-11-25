@@ -23,6 +23,23 @@ If the build fails, open the failed step in Actions and send me the error text; 
   modes are turned off, so JPEG/video come out close to the plain sensor image. Switch to "Std" for
   the phone's normal processing.
 
+## Voice assistant (offline, push-to-talk)
+Tap **Talk**, then speak. Understood by simple built-in rules; nothing is sent anywhere.
+- Shoot: "take a photo", "start recording", "stop", "photo mode", "video mode", "raw video"
+- Lens/zoom: "zoom in", "zoom to 3", "ultra wide", "telephoto", "front camera"
+- Settings: "flash on/off/auto", "torch on", "RAW", "JPEG", "raw plus jpeg", "natural look",
+  "timer 10", "grid on", "ISO 400", "shutter 1/250", "exposure plus one", "auto exposure",
+  "manual focus", "focus infinity", "daylight", "tungsten"
+- Ask: "how's the light?", "is it in focus?", "what ISO?", "which lens?", "what are the settings?"
+- "help" lists ideas; "mute" turns spoken replies off (also the Replies button).
+- Volume buttons work as the shutter.
+
+Limits: it needs the phone's **offline** speech recognizer (Android 12+ with an offline language
+pack installed). If it's missing, the app says so; it will never fall back to cloud recognition.
+The mic is busy while recording video, so use the shutter button then. Spoken replies use the
+phone's text-to-speech engine. The assistant can read exposure and focus, but it cannot see or
+describe the picture; that would need a large on-device vision model, which isn't included.
+
 ## Privacy
 - The manifest has **no INTERNET permission**, so the app cannot send anything anywhere.
 - Backups are disabled. There are no third-party libraries.

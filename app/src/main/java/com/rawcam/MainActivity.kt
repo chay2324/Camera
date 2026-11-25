@@ -13,6 +13,7 @@ import android.os.CountDownTimer
 import android.os.SystemClock
 import android.util.Size
 import android.view.Gravity
+import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.OrientationEventListener
 import android.view.ScaleGestureDetector
@@ -25,6 +26,7 @@ import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.SeekBar
 import android.widget.TextView
+import kotlin.math.abs
 import kotlin.math.ln
 import kotlin.math.exp
 import kotlin.math.roundToInt
@@ -49,6 +51,13 @@ class MainActivity : Activity(), CameraEngine.Callback {
     private lateinit var timerChip: TextView
     private lateinit var modeRow: LinearLayout
     private lateinit var evLabel: TextView
+    private lateinit var gridChipV: TextView
+    private lateinit var talkChip: TextView
+    private lateinit var repliesChip: TextView
+    private lateinit var voice: VoiceInput
+    private lateinit var speaker: Speaker
+    private val wbChips = ArrayList<TextView>()
+    private var proSync: () -> Unit = {}
 
     private var lenses: List<Lens> = emptyList()
     private var facingBack = true
@@ -79,6 +88,8 @@ class MainActivity : Activity(), CameraEngine.Callback {
         super.onCreate(b)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         engine = CameraEngine(this, MediaSaver(this), this)
+        voice = VoiceInput(this)
+        speaker = Speaker(this)
         buildUi()
         orient = object : OrientationEventListener(this) {
             override fun onOrientationChanged(o: Int) {
@@ -99,12 +110,15 @@ class MainActivity : Activity(), CameraEngine.Callback {
 
     override fun onPause() {
         orient.disable()
+        voice.stop()
         engine.stop()
         started = false
         super.onPause()
     }
 
     override fun onDestroy() {
+        voice.stop()
+        speaker.shutdown()
         engine.shutdown()
         super.onDestroy()
     }
@@ -215,6 +229,7 @@ class MainActivity : Activity(), CameraEngine.Callback {
             it.text = if (timerSec == 0) "Timer off" else "${timerSec}s"
         }
         val gridChip = chip("Grid") { gridOn = !gridOn; grid.visibility = if (gridOn) View.VISIBLE else View.GONE; (it).setActive(gridOn) }
+        gridChipV = gridChip
         val proChip = chip("Pro") {
             proPanel.visibility = if (proPanel.visibility == View.VISIBLE) View.GONE else View.VISIBLE
             it.setActive(proPanel.visibility == View.VISIBLE)
@@ -228,6 +243,15 @@ class MainActivity : Activity(), CameraEngine.Callback {
         msg = TextView(this).apply { setTextColor(Color.WHITE); textSize = 13f; gravity = Gravity.CENTER; setPadding(dp(12), dp(4), dp(12), dp(4)) }
         recTime = TextView(this).apply { setTextColor(Color.parseColor("#FF5252")); textSize = 16f; gravity = Gravity.CENTER; visibility = View.GONE }
         bottom.addView(msg); bottom.addView(recTime)
+        val talkRow = LinearLayout(this).apply { gravity = Gravity.CENTER }
+        talkChip = chip("Talk") { onTalk() }
+        repliesChip = chip("Replies: on") {
+            speaker.enabled = !speaker.enabled
+            it.text = if (speaker.enabled) "Replies: on" else "Replies: off"
+        }
+        talkRow.addView(talkChip, LinearLayout.LayoutParams(-2, -2).apply { setMargins(dp(6), dp(2), dp(6), dp(2)) })
+        talkRow.addView(repliesChip, LinearLayout.LayoutParams(-2, -2).apply { setMargins(dp(6), dp(2), dp(6), dp(2)) })
+        bottom.addView(talkRow)
 
         proPanel = buildProPanel()
         bottom.addView(proPanel)
@@ -334,7 +358,6 @@ class MainActivity : Activity(), CameraEngine.Callback {
         p.addView(row("EV", evLabel, evBar, null))
 
         val wbRow = LinearLayout(this).apply { gravity = Gravity.CENTER }
-        val wbChips = ArrayList<TextView>()
         for (w in WbPreset.values()) {
             val ch = chip(w.label) {
                 engine.settings.wb = w; wbChips.forEach { x -> x.setActive(x === it) }; engine.updateRepeating()
@@ -343,6 +366,27 @@ class MainActivity : Activity(), CameraEngine.Callback {
             wbRow.addView(ch, LinearLayout.LayoutParams(-2, -2).apply { setMargins(dp(3), dp(2), dp(3), dp(2)) })
         }
         p.addView(wbRow)
+        proSync = {
+            val s = engine.settings
+            mToggle.setActive(s.manualExposure); mfToggle.setActive(s.manualFocus)
+            wbChips.forEach { it.setActive(it.text == s.wb.label) }
+            val cc = c()
+            if (cc != null) {
+                val ri = Ranges.iso(cc); val hiI = minOf(ri.upper, 6400)
+                val loD = ri.lower.toDouble(); val hiD = hiI.toDouble()
+                if (hiD > loD) isoBar.progress = (1000 * (ln(s.iso.coerceIn(ri.lower, hiI).toDouble()) - ln(loD)) / (ln(hiD) - ln(loD))).roundToInt().coerceIn(0, 1000)
+                isoL.text = "${s.iso}"
+                val rs = Ranges.shutter(cc)
+                val sLo = maxOf(rs.lower, 125_000L).toDouble(); val sHi = minOf(rs.upper, 1_000_000_000L).toDouble()
+                if (sHi > sLo) shBar.progress = (1000 * (ln(s.shutterNs.toDouble().coerceIn(sLo, sHi)) - ln(sLo)) / (ln(sHi) - ln(sLo))).roundToInt().coerceIn(0, 1000)
+                shL.text = fmtShutter(s.shutterNs)
+                val rg = Ranges.ev(cc)
+                evBar.progress = (s.evIndex - rg.lower).coerceIn(0, maxOf(0, rg.upper - rg.lower))
+                evLabel.text = "%+.1f".format(s.evIndex * Ranges.evStep(cc))
+                val mf = Ranges.minFocusDiopter(cc)
+                focBar.progress = if (mf > 0f) (s.focusDiopter / mf * 100).roundToInt().coerceIn(0, 100) else 0
+            }
+        }
         return p
     }
 
@@ -392,6 +436,201 @@ class MainActivity : Activity(), CameraEngine.Callback {
         try {
             startActivity(Intent(Intent.ACTION_VIEW).setDataAndType(u, lastMime).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION))
         } catch (e: Exception) { toast("No gallery app found") }
+    }
+
+
+    // ------------------------------------------------------------------ voice
+
+    private fun say(text: String) {
+        toast(text)
+        if (!engine.isRecording()) speaker.say(text)   // don't let replies end up in a video's audio
+    }
+
+    private fun onTalk() {
+        if (!hasPerms()) { say("Microphone permission is needed"); return }
+        if (engine.isRecording() && mode == Mode.VIDEO) {
+            say("The mic is busy while recording video. Use the shutter button to stop.")
+            return
+        }
+        talkChip.text = "Listening..."
+        voice.listen(
+            onHeard = { alts -> talkChip.text = "Talk"; handleSpeech(alts) },
+            onFail = { e -> talkChip.text = "Talk"; say(e) },
+            onStart = {}
+        )
+    }
+
+    private fun handleSpeech(alts: List<String>) {
+        var cmd: Cmd = Cmd.Unknown
+        var heard = alts.first()
+        for (a in alts) {
+            val c = Commands.parse(a)
+            if (c !is Cmd.Unknown) { cmd = c; heard = a; break }
+        }
+        if (cmd is Cmd.Unknown) { say("Sorry, I didn't get \"$heard\". Say help for ideas."); return }
+        say(runCommand(cmd))
+    }
+
+    private fun syncChips() {
+        val s = engine.settings
+        flashChip.text = s.flash.label
+        formatChip.text = if (mode == Mode.RAW_VIDEO) "${s.rawVideoFps} fps" else s.format.label
+        lookChip.text = if (s.natural) "Natural" else "Std"
+        timerChip.text = if (timerSec == 0) "Timer off" else "${timerSec}s"
+        gridChipV.setActive(gridOn)
+        grid.visibility = if (gridOn) View.VISIBLE else View.GONE
+        proSync()
+    }
+
+    private fun ratioOf(l: Lens): Float = l.label.removeSuffix("x").toFloatOrNull() ?: 1f
+
+    private fun lensByRatio(r: Float): String {
+        if (!facingBack) return "Switch to the back camera first"
+        val pinned = lenses.filter { it.facingBack && it.physicalId != null }.sortedBy { ratioOf(it) }
+        if (pinned.isEmpty()) {
+            val z = r.coerceIn(minZoom, maxZoom)
+            engine.setZoom(z); showZoom(z)
+            return "Zoom %.1f".format(z)
+        }
+        val target = if (r < 0f) pinned.last() else pinned.minByOrNull { abs(ratioOf(it) - r) }!!
+        if (target == lens) return "Already on the ${target.label} lens"
+        lens = target; rebuildLensRow(); reopen()
+        return "Switching to the ${target.label} lens"
+    }
+
+    private fun zoomTo(z: Float): String {
+        val cur = lens
+        if (cur != null && cur.physicalId != null) return lensByRatio(z)
+        val c = z.coerceIn(minZoom, maxZoom)
+        engine.setZoom(c); showZoom(c)
+        return "Zoom %.1f".format(c)
+    }
+
+    private fun exposureWord(): String {
+        val iso = engine.liveIso; val ns = engine.liveShutterNs
+        if (iso == 0 || ns == 0L) return "I don't have a reading yet. Try again in a second."
+        val level = when {
+            iso >= 1600 || ns >= 66_000_000L -> "quite dark"
+            iso >= 400 || ns >= 16_000_000L -> "dim"
+            iso <= 100 && ns <= 1_000_000L -> "very bright"
+            else -> "well lit"
+        }
+        return "It looks $level: ISO $iso at ${fmtShutter(ns)}."
+    }
+
+    private fun focusWord(): String {
+        val s = engine.settings
+        if (s.manualFocus) return "Manual focus is on."
+        return when (engine.liveAf) {
+            2, 4 -> "Focus looks locked."
+            1, 3 -> "Still searching for focus."
+            5, 6 -> "The subject looks out of focus."
+            else -> "No focus reading yet."
+        }
+    }
+
+    private fun runCommand(cmd: Cmd): String {
+        val s = engine.settings
+        val cc = lens?.logicalChars
+        return when (cmd) {
+            is Cmd.Photo -> {
+                if (mode != Mode.PHOTO) { setMode(Mode.PHOTO); shutter.postDelayed({ onShutter() }, 1200) } else onShutter()
+                "Taking a photo"
+            }
+            is Cmd.StartRec -> when {
+                engine.isRecording() -> "Already recording"
+                mode == Mode.PHOTO -> { setMode(Mode.VIDEO); shutter.postDelayed({ engine.startRecording() }, 1200); "Recording video" }
+                else -> { engine.startRecording(); "Recording" }
+            }
+            is Cmd.StopRec -> if (engine.isRecording()) { engine.stopRecording(); "Stopped" } else "Nothing is recording"
+            is Cmd.SetMode -> { setMode(cmd.mode); "Switched to ${cmd.mode.name.lowercase().replace('_', ' ')}" }
+            is Cmd.ZoomBy -> {
+                val cur = lens
+                if (cur != null && cur.physicalId != null) lensByRatio(ratioOf(cur) * cmd.factor)
+                else zoomTo(s.zoom * cmd.factor)
+            }
+            is Cmd.ZoomTo -> zoomTo(cmd.z)
+            is Cmd.LensRatio -> lensByRatio(cmd.ratio)
+            is Cmd.Facing -> {
+                if (engine.isRecording()) "Stop recording first"
+                else { facingBack = cmd.back; selectDefaultLens(); rebuildLensRow(); reopen(); if (cmd.back) "Back camera" else "Front camera" }
+            }
+            is Cmd.Flash -> {
+                if (cc != null && !Ranges.hasFlash(cc)) "This camera has no flash"
+                else { s.flash = cmd.mode; syncChips(); engine.updateRepeating(); cmd.mode.label }
+            }
+            is Cmd.Fmt -> {
+                s.format = cmd.format; syncChips()
+                if (cmd.format != Format.JPEG && lens?.hasRaw == false) "${cmd.format.label} set, but this lens has no RAW. Try the 1x lens."
+                else "Format ${cmd.format.label}"
+            }
+            is Cmd.Natural -> { s.natural = cmd.on; syncChips(); engine.updateRepeating(); if (cmd.on) "Natural look, no extra processing" else "Standard processing" }
+            is Cmd.Timer -> { timerSec = cmd.seconds; syncChips(); if (timerSec == 0) "Timer off" else "Timer ${timerSec} seconds" }
+            is Cmd.Grid -> { gridOn = cmd.on; syncChips(); if (cmd.on) "Grid on" else "Grid off" }
+            is Cmd.Stabilize -> { s.stabilize = cmd.on; engine.updateRepeating(); if (cmd.on) "Stabilization on" else "Stabilization off" }
+            is Cmd.Iso -> {
+                val r = cc?.let { Ranges.iso(it) }
+                val v = if (r != null) cmd.value.coerceIn(r.lower, r.upper) else cmd.value
+                s.manualExposure = true; s.iso = v; syncChips(); engine.updateRepeating(); "Manual exposure, ISO $v"
+            }
+            is Cmd.Shutter -> {
+                val r = cc?.let { Ranges.shutter(it) }
+                val v = if (r != null) cmd.ns.coerceIn(r.lower, r.upper) else cmd.ns
+                s.manualExposure = true; s.shutterNs = v; syncChips(); engine.updateRepeating(); "Manual exposure, shutter ${fmtShutter(v)}"
+            }
+            is Cmd.AutoExposure -> { s.manualExposure = false; syncChips(); engine.updateRepeating(); "Auto exposure" }
+            is Cmd.Ev -> {
+                if (cc == null) "Camera not ready"
+                else {
+                    val step = Ranges.evStep(cc)
+                    if (step <= 0f) "This camera has no exposure compensation"
+                    else {
+                        val rg = Ranges.ev(cc)
+                        val delta = (cmd.stops / step).roundToInt()
+                        s.evIndex = (if (cmd.relative) s.evIndex + delta else delta).coerceIn(rg.lower, rg.upper)
+                        s.manualExposure = false
+                        syncChips(); engine.updateRepeating()
+                        "Exposure %+.1f".format(s.evIndex * step)
+                    }
+                }
+            }
+            is Cmd.ManualFocus -> { s.manualFocus = cmd.on; syncChips(); engine.updateRepeating(); if (cmd.on) "Manual focus" else "Autofocus" }
+            is Cmd.FocusTo -> {
+                s.manualFocus = true
+                s.focusDiopter = if (cmd.far) 0f else (cc?.let { Ranges.minFocusDiopter(it) } ?: 0f)
+                syncChips(); engine.updateRepeating()
+                if (cmd.far) "Focus at infinity" else "Focus close"
+            }
+            is Cmd.Wb -> { s.wb = cmd.preset; syncChips(); engine.updateRepeating(); "White balance ${cmd.preset.label}" }
+            is Cmd.SpokenReplies -> { speaker.enabled = cmd.on; repliesChip.text = if (cmd.on) "Replies: on" else "Replies: off"; if (cmd.on) "Spoken replies on" else "Spoken replies off" }
+            is Cmd.OpenGallery -> { openGallery(); "Opening gallery" }
+            is Cmd.Help -> "Try: take a photo, start recording, zoom in, ultra wide, flash on, RAW, ISO 400, shutter 1/250, exposure plus one, how's the light?"
+            is Cmd.Query -> when (cmd.what) {
+                "light" -> exposureWord()
+                "focus" -> focusWord()
+                "iso" -> if (s.manualExposure) "ISO ${s.iso}, manual" else "ISO ${engine.liveIso}, auto"
+                "shutter" -> if (s.manualExposure) "Shutter ${fmtShutter(s.shutterNs)}, manual" else "Shutter ${fmtShutter(engine.liveShutterNs)}, auto"
+                "lens" -> "${if (facingBack) "Back" else "Front"} camera, ${lens?.label ?: "unknown"} lens"
+                "mode" -> "${mode.name.lowercase().replace('_', ' ')} mode, ${s.format.label}"
+                "zoom" -> "Zoom %.1f".format(s.zoom)
+                else -> "${mode.name.lowercase().replace('_', ' ')}, ${s.format.label}, ${if (s.natural) "natural" else "standard"} look, " +
+                    (if (s.manualExposure) "manual exposure" else "auto exposure") + ", flash ${s.flash.label.lowercase()}"
+            }
+            is Cmd.Chat -> when (cmd.kind) {
+                "hello" -> "Hi! Tell me what to do, or say help."
+                "thanks" -> "Anytime."
+                else -> "I'm the offline voice helper in RawCam. I can run the camera and read its exposure and focus, but I can't see the picture itself yet."
+            }
+            is Cmd.Unknown -> "Sorry, I didn't understand"
+        }
+    }
+
+    override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
+        if (keyCode == KeyEvent.KEYCODE_VOLUME_DOWN || keyCode == KeyEvent.KEYCODE_VOLUME_UP) {
+            if (event.repeatCount == 0) onShutter()
+            return true
+        }
+        return super.onKeyDown(keyCode, event)
     }
 
     private fun toast(t: String) = runOnUiThread { msg.text = t; msg.postDelayed({ if (msg.text == t) msg.text = "" }, 3500) }

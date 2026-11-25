@@ -70,6 +70,9 @@ class CameraEngine(
     val settings = CaptureSettings()
     @Volatile var deviceOrientation = 0
     @Volatile var prefer4k = true
+    @Volatile var liveIso = 0
+    @Volatile var liveShutterNs = 0L
+    @Volatile var liveAf = -1
 
     private val mgr = ctx.getSystemService(Context.CAMERA_SERVICE) as CameraManager
     private val thread = HandlerThread("cam-engine").also { it.start() }
@@ -368,6 +371,9 @@ class CameraEngine(
 
     private val repeatCallback = object : CameraCaptureSession.CaptureCallback() {
         override fun onCaptureCompleted(s: CameraCaptureSession, req: CaptureRequest, res: TotalCaptureResult) {
+            res.get(CaptureResult.SENSOR_SENSITIVITY)?.let { liveIso = it }
+            res.get(CaptureResult.SENSOR_EXPOSURE_TIME)?.let { liveShutterNs = it }
+            res.get(CaptureResult.CONTROL_AF_STATE)?.let { liveAf = it }
             if (mode == Mode.RAW_VIDEO && recording) {
                 val ts = res.get(CaptureResult.SENSOR_TIMESTAMP) ?: return
                 val name = "frame_%05d".format(++frameNo)
